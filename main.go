@@ -2,24 +2,18 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
-	"github.com/ChimeraCoder/anaconda"
-	"net/url"
 	"os"
 	"strings"
 )
 
-type Configuration struct {
-	ConsumerKey       string
-	ConsumerSecret    string
-	AccessToken       string
-	AccessTokenSecret string
-}
+var keyword = flag.String("k", "gopher", "The twitter search key.")
 
-func configure() (Configuration, error) {
+func configure() (TwitterConfiguration, error) {
 	file, _ := os.Open("conf.json")
 	decoder := json.NewDecoder(file)
-	configuration := Configuration{}
+	configuration := TwitterConfiguration{}
 	err := decoder.Decode(&configuration)
 	if err != nil {
 		return configuration, err
@@ -27,48 +21,39 @@ func configure() (Configuration, error) {
 	return configuration, nil
 }
 
+func TweetSplitter(item interface{}, c chan interface{}) {
+	c <- strings.Split(item.(string), " ")
+}
+
+func TermFrequency(in chan interface{}, out chan interface{}) {
+	tweets := 0
+	TweetWordCounter := map[string]int{}
+
+	for tweet := range in {
+		t := tweet.([]string)
+		tweets++
+		for _, word := range t {
+
+			TweetWordCounter[word]++
+		}
+	}
+	out <- TweetWordCounter
+}
+
 func main() {
+	flag.Parse()
+
 	conf, err := configure()
 	if err != nil {
-		panic("Error configuration")
+		panic("Error configuration: Create your 'conf.json' file")
 	}
 
-	anaconda.SetConsumerKey(conf.ConsumerKey)
-	anaconda.SetConsumerSecret(conf.ConsumerSecret)
-	api := anaconda.NewTwitterApi(conf.AccessToken, conf.AccessTokenSecret)
+	twitter := newTwitter(conf)
+	TermFrequency := MapReduce(TweetSplitter, TermFrequency, twitter.find(*keyword, 15), 15).(map[string]int)
 
-	mapper := func(item interface{}, c chan interface{}) {
-		c <- strings.Split(item.(string), " ")
+	for word, counter := range TermFrequency {
+		fmt.Println(fmt.Sprintf("[  %v  ] \t of (%v)", counter, word))
 	}
 
-	reducer := func(in chan interface{}, out chan interface{}) {
-		reduced := map[string]int{}
-
-		for tweets := range in {
-			for _, word := range tweets.([]string) {
-				reduced[word]++
-			}
-		}
-		out <- reduced
-	}
-
-	producer := func(searchKey string, counter int) chan interface{} {
-		big_string := make(chan interface{})
-
-		go func() {
-			v := url.Values{}
-			v.Set("count", string(counter))
-			searchResult, _ := api.GetSearch(searchKey, v)
-			for _, tweet := range searchResult {
-				big_string <- tweet.Text
-			}
-			defer close(big_string)
-		}()
-
-		return big_string
-	}
-
-	for word, counter := range MapReduce(mapper, reducer, producer("golang", 100), 2).(map[string]int) {
-		fmt.Println(word, counter)
-	}
+	fmt.Println(*keyword)
 }
